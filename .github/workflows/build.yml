@@ -1,37 +1,47 @@
 name: Build APK
-
 on:
-  push:
   workflow_dispatch:
-
+  push:
+    branches: [ main ]
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
+      - name: Unzip project
+        run: |
+          z=$(find . -iname "*PokerAI*.zip" -not -path "./.git/*" | head -n1)
+          if [ -z "$z" ]; then echo "PokerAI zip not found in repo"; find . -not -path "./.git/*" | head -50; exit 1; fi
+          echo "Using $z"
+          unzip -o "$z" -d .
+          if [ ! -f PokerAI/app/src/main/java/com/example/pokerai/Config.kt ]; then echo "OLD ZIP: Config.kt is missing. Upload the newest PokerAI_Live.zip."; exit 1; fi
+          ls PokerAI
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
-
+          java-version: 17
+      - name: Make sure Android SDK 34 is present (runner already has an SDK)
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0" >/dev/null 2>&1 || true
       - uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.9'
-
-      - name: Unzip
+          gradle-version: 8.9
+      - name: Configure NVIDIA API (key from GitHub secret)
+        env:
+          NVIDIA_KEY: ${{ secrets.NVIDIA_API_KEY }}
         run: |
-          z=$(find . -maxdepth 4 -iname "*Gemini*.zip" | head -n1)
-          if [ -z "$z" ]; then echo "ZIP not found in repo"; ls -la; exit 1; fi
-          echo "Using $z"
-          unzip -o "$z" -d project
-
-      - name: Build
-        run: |
-          cd project/PokerAI
-          gradle assembleDebug --no-daemon
-
+          if [ -z "$NVIDIA_KEY" ]; then echo "SECRET NVIDIA_API_KEY IS EMPTY - add it in Settings > Secrets and variables > Actions"; exit 1; fi
+          f=PokerAI/app/src/main/java/com/example/pokerai/Config.kt
+          sed -i 's|const val BASE_URL = ""|const val BASE_URL = "https://integrate.api.nvidia.com/v1"|' $f
+          sed -i 's|const val MODEL = "gemini-3.5-flash"|const val MODEL = "nvidia/nemotron-3.5-super-vl-120b-a12b"|' $f
+          sed -i "s|const val KEY = \"\"|const val KEY = \"${NVIDIA_KEY}\"|" $f
+          sed -i 's|put("max_tokens", 400)|put("max_tokens", 1024)|' PokerAI/app/src/main/java/com/example/pokerai/App.kt
+          grep -c "integrate.api.nvidia.com" $f
+      - name: Build debug APK
+        working-directory: PokerAI
+        run: gradle assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
         with:
-          name: PokerAI-debug-apk
-          path: project/PokerAI/app/build/outputs/apk/debug/*.apk
+          name: PokerAI-apk
+          path: PokerAI/app/build/outputs/apk/debug/app-debug.apk
